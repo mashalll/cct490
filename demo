@@ -1,0 +1,152 @@
+import os
+import pygame
+import speech_recognition as sr
+import threading
+import queue
+
+pygame.mixer.init()
+pygame.mixer.music.set_volume(0.5)
+
+tile_codes = ["a1", "a2", "a3", "a4", "a5", "a6", "a7",
+              "b1", "b2", "b3", "b4", "b5", "b6",
+              "c1", "c2", "c3", "c4", "c5", "c6"]
+
+playback_control = {
+    "stop": False,
+    "pause": False,
+}
+
+play_queue = queue.Queue()
+is_summarizing = False
+
+
+def clear_queue():
+    while not play_queue.empty():
+        try:
+            play_queue.get_nowait()
+            play_queue.task_done()
+        except queue.Empty:
+            break
+
+
+def playback_worker():
+    while True:
+        file = play_queue.get()
+        if file is None:
+            break
+        if os.path.exists(file):
+            pygame.mixer.music.load(file)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                if playback_control["stop"]:
+                    pygame.mixer.music.stop()
+                    playback_control["stop"] = False
+                    break
+                if playback_control["pause"]:
+                    pygame.mixer.music.pause()
+                    while playback_control["pause"] and not playback_control["stop"]:
+                        continue
+                    pygame.mixer.music.unpause()
+        play_queue.task_done()
+
+
+playback_thread = threading.Thread(target=playback_worker, daemon=True)
+playback_thread.start()
+
+
+def play_audio(file):
+    play_queue.put(file)
+
+
+def handle_command(command):
+    global is_summarizing
+    command = command.lower()
+    if "play" in command:
+        tile = command.split("play ")[-1].strip()
+        if tile in tile_codes:
+            play_audio(f"tiles/{tile}.mp3")
+        else:
+            play_audio("tile_not_found.mp3")
+
+    elif "pause" in command:
+        playback_control["pause"] = True
+        # play_audio("commands/pausing.mp3")
+
+    elif "continue" in command:
+        playback_control["pause"] = False
+        # play_audio("commands/continuing.mp3")
+
+    elif "stop" in command:
+        playback_control["stop"] = True
+        clear_queue()
+        is_summarizing = False
+        play_audio("stopping.mp3")
+
+    elif "describe" in command:
+        tile = command.split("describe ")[-1].strip()
+        if tile in tile_codes:
+            play_audio("now_describing.mp3")
+            play_audio(f"summary/{tile}_desc.mp3")
+        else:
+            play_audio("tile_not_found.mp3")
+
+    elif "skim" in command:
+        if not is_summarizing:
+            is_summarizing = True
+            play_audio("summarizing.mp3")
+            for tile in tile_codes:
+                if playback_control["stop"]:
+                    break
+                play_audio(f"summary/{tile}_desc.mp3")
+            is_summarizing = False
+
+    elif "help" in command:
+        play_audio("commands/help.mp3")
+
+    elif "increase volume" in command:
+        pygame.mixer.music.set_volume(1.0)
+        play_audio("commands/increased_volume.mp3")
+
+    elif "decrease volume" in command:
+        pygame.mixer.music.set_volume(0.1)
+        play_audio("commands/decreased_volume.mp3")
+
+    elif "goodbye george" in command:
+        play_audio("commands/goodbye.mp3")
+        return "reset"
+
+    else:
+        play_audio("command_not_recognized.mp3")
+
+    return False
+
+
+recognizer = sr.Recognizer()
+while True:
+    print("Waiting for activation phrase...")
+    with sr.Microphone() as source:
+        while True:
+            try:
+                audio = recognizer.listen(source)
+                trigger = recognizer.recognize_google(audio).lower()
+                if "hello george" in trigger:
+                    play_audio("commands/hello.mp3")
+                    print("System activated. Listening for commands...")
+                    break
+            except sr.UnknownValueError:
+                print("Could not understand. Waiting for 'Hello George'.")
+            except sr.RequestError as e:
+                print(f"Request error: {e}")
+
+        while True:
+            try:
+                print("Listening for command...")
+                audio = recognizer.listen(source)
+                command = recognizer.recognize_google(audio)
+                print(f"You said: {command}")
+                if handle_command(command) == "reset":
+                    break
+            except sr.UnknownValueError:
+                print("Sorry, I could not understand the audio.")
+            except sr.RequestError as e:
+                print(f"Could not request results; {e}")
